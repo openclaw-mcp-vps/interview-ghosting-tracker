@@ -1,0 +1,6 @@
+// This file is intentionally documentation-only.
+// The app uses direct SQL with `pg` to satisfy deployment reliability requirements.
+// Current production tables are created by lib/database.ts:
+// - companies
+// - reports
+// - subscriptions
