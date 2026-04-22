@@ -1,9 +1,25 @@
-export const ACCESS_COOKIE = "igt_access";
+import { cookies } from "next/headers";
+import { resolveAccessSessionEmail } from "@/lib/database";
 
-type CookieStoreLike = {
-  get: (name: string) => { value: string } | undefined;
-};
+export const ACCESS_COOKIE_NAME = "ig_access";
 
-export function hasPaidAccess(cookiesStore: CookieStoreLike): boolean {
-  return cookiesStore.get(ACCESS_COOKIE)?.value === "active";
+export async function getAccessContext() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(ACCESS_COOKIE_NAME)?.value;
+
+  if (!token) {
+    return { hasAccess: false as const, email: null };
+  }
+
+  let email: string | null = null;
+  try {
+    email = await resolveAccessSessionEmail(token);
+  } catch {
+    email = null;
+  }
+
+  return {
+    hasAccess: Boolean(email) as boolean,
+    email
+  };
 }

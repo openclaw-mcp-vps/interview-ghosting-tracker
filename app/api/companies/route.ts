@@ -1,30 +1,23 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getCompanyBySlug, listCompanies } from "@/lib/database";
+import { NextResponse } from "next/server";
+import { listCompanies } from "@/lib/database";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const slug = searchParams.get("slug");
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const q = url.searchParams.get("q")?.trim() ?? "";
+  const industry = url.searchParams.get("industry")?.trim() ?? "";
+  const limit = Number(url.searchParams.get("limit") ?? 24);
 
-  if (slug) {
-    const company = await getCompanyBySlug(slug);
-    if (!company) {
-      return NextResponse.json({ error: "Company not found" }, { status: 404 });
-    }
+  try {
+    const companies = await listCompanies({
+      query: q,
+      industry,
+      limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 24
+    });
 
-    return NextResponse.json({ company });
+    return NextResponse.json({ companies });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to load company data.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  const query = searchParams.get("q") ?? undefined;
-  const industry = searchParams.get("industry") ?? undefined;
-  const minGhosting = searchParams.get("minGhosting");
-  const limit = Number(searchParams.get("limit") ?? "30");
-
-  const companies = await listCompanies({
-    query,
-    industry,
-    minGhostingRate: minGhosting ? Number(minGhosting) : undefined,
-    limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 30
-  });
-
-  return NextResponse.json({ companies });
 }

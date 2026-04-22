@@ -1,18 +1,66 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0d1117;
-  --foreground: #e6edf3;
-  --border: #2d333b;
+  color-scheme: dark;
+  --bg: #0d1117;
+  --bg-accent: #111f2f;
+  --fg: #e6edf3;
+  --muted: #94a3b8;
 }
 
 * {
-  border-color: var(--border);
+  border-color: rgb(30 41 59 / 1);
 }
 
 html,
 body {
   min-height: 100%;
-  background: var(--background);
-  color: var(--foreground);
+}
+
+body {
+  background:
+    radial-gradient(900px 450px at 5% -10%, rgba(34, 211, 238, 0.16), transparent 60%),
+    radial-gradient(900px 420px at 95% -20%, rgba(59, 130, 246, 0.12), transparent 60%),
+    linear-gradient(180deg, #0d1117 0%, #0d1117 100%);
+  color: var(--fg);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  animation: rise-in 0.55s ease forwards;
+}
+
+.reveal-delay-1 {
+  animation-delay: 0.1s;
+}
+
+.reveal-delay-2 {
+  animation-delay: 0.2s;
+}
+
+.reveal-delay-3 {
+  animation-delay: 0.3s;
+}
+
+@keyframes rise-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.grid-lines {
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  background-size: 30px 30px;
 }

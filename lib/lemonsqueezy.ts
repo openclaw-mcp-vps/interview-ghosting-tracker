@@ -1,46 +1,87 @@
-import crypto from "crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
-export function getCheckoutUrl(): string {
-  const storeId = process.env.NEXT_PUBLIC_LEMON_SQUEEZY_STORE_ID;
-  const productId = process.env.NEXT_PUBLIC_LEMON_SQUEEZY_PRODUCT_ID;
+const MAX_SIGNATURE_AGE_SECONDS = 5 * 60;
 
-  if (!storeId || !productId) {
-    return "#";
-  }
+function parseStripeSignatureHeader(headerValue: string) {
+  const parts = headerValue.split(",").map((segment) => segment.trim());
+  const timestamp = parts
+    .find((part) => part.startsWith("t="))
+    ?.replace("t=", "");
 
-  return `https://${storeId}.lemonsqueezy.com/buy/${productId}?embed=1&media=0&logo=0`;
+  const signatures = parts
+    .filter((part) => part.startsWith("v1="))
+    .map((part) => part.replace("v1=", ""));
+
+  return {
+    timestamp: timestamp ? Number(timestamp) : NaN,
+    signatures
+  };
 }
 
-export function verifyLemonSqueezySignature(rawBody: string, signature: string | null): boolean {
-  const secret = process.env.LEMON_SQUEEZY_WEBHOOK_SECRET;
-  if (!secret || !signature) return false;
-
-  const digest = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-  const digestBuffer = Buffer.from(digest, "utf8");
-  const signatureBuffer = Buffer.from(signature, "utf8");
-
-  if (digestBuffer.length !== signatureBuffer.length) {
+export function verifyStripeSignature(input: {
+  rawBody: string;
+  signatureHeader: string | null;
+  secret: string;
+}) {
+  if (!input.signatureHeader) {
     return false;
   }
 
-  return crypto.timingSafeEqual(digestBuffer, signatureBuffer);
+  const parsed = parseStripeSignatureHeader(input.signatureHeader);
+  if (!Number.isFinite(parsed.timestamp) || parsed.signatures.length === 0) {
+    return false;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - parsed.timestamp) > MAX_SIGNATURE_AGE_SECONDS) {
+    return false;
+  }
+
+  const signedPayload = `${parsed.timestamp}.${input.rawBody}`;
+  const expected = createHmac("sha256", input.secret)
+    .update(signedPayload, "utf8")
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected, "utf8");
+
+  return parsed.signatures.some((signature) => {
+    const signatureBuffer = Buffer.from(signature, "utf8");
+
+    if (signatureBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+
+    return timingSafeEqual(signatureBuffer, expectedBuffer);
+  });
 }
 
-export function extractEmailFromWebhook(payload: Record<string, unknown>): string | null {
-  const data = payload.data as { attributes?: Record<string, unknown> } | undefined;
-  const attrs = data?.attributes;
-  if (!attrs) return null;
+export type StripeWebhookPayload = {
+  type: string;
+  data?: {
+    object?: Record<string, unknown>;
+  };
+};
 
-  const email = attrs.user_email ?? attrs.customer_email;
-  return typeof email === "string" ? email : null;
-}
+export function readStripeIdentity(payload: StripeWebhookPayload) {
+  const object = payload.data?.object;
 
-export function mapWebhookStatus(eventName: string): string | null {
-  if (["order_created", "subscription_created", "subscription_resumed"].includes(eventName)) {
-    return "active";
-  }
-  if (["subscription_cancelled", "subscription_expired", "subscription_paused"].includes(eventName)) {
-    return "inactive";
-  }
-  return null;
+  const maybeEmail =
+    typeof object?.customer_email === "string"
+      ? object.customer_email
+      : typeof (object?.customer_details as { email?: unknown } | undefined)?.email ===
+          "string"
+        ? ((object?.customer_details as { email: string }).email ?? null)
+        : null;
+
+  const maybeCustomerId =
+    typeof object?.customer === "string" ? object.customer : null;
+
+  const maybeSubscriptionId =
+    typeof object?.subscription === "string" ? object.subscription : null;
+
+  return {
+    email: maybeEmail,
+    stripeCustomerId: maybeCustomerId,
+    stripeSubscriptionId: maybeSubscriptionId
+  };
 }

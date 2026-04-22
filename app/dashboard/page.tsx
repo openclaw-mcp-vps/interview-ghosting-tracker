@@ -1,127 +1,177 @@
-import { cookies } from "next/headers";
 import Link from "next/link";
-import { LemonCheckoutButton } from "@/components/LemonCheckoutButton";
+import type { Metadata } from "next";
+import { Lock, TrendingDown, TrendingUp } from "lucide-react";
+import { format } from "date-fns";
+import { getAccessContext } from "@/lib/access";
+import { getDashboardData, listRecentReports } from "@/lib/database";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ACCESS_COOKIE, hasPaidAccess } from "@/lib/access";
-import { getDashboardSnapshot } from "@/lib/database";
-import { getCheckoutUrl } from "@/lib/lemonsqueezy";
 
-type DashboardPageProps = {
-  searchParams: Promise<{ unlock?: string }>;
+export const metadata: Metadata = {
+  title: "Dashboard",
+  description:
+    "Subscriber analytics for interview ghosting trends, high-risk companies, and candidate timelines."
 };
 
-export default async function DashboardPage({ searchParams }: DashboardPageProps) {
-  const cookieStore = await cookies();
-  const isMember = hasPaidAccess(cookieStore);
-  const params = await searchParams;
+export const dynamic = "force-dynamic";
 
-  if (!isMember) {
+export default async function DashboardPage() {
+  const paymentLink = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK as string;
+
+  const access = await getAccessContext();
+
+  if (!access.hasAccess) {
     return (
-      <main className="mx-auto max-w-3xl px-4 py-12">
-        <Card className="border-[#2d333b] bg-[#161b22]">
+      <div className="mx-auto max-w-2xl space-y-5 py-10">
+        <Card className="border-cyan-500/30 bg-cyan-500/5">
           <CardHeader>
-            <CardTitle className="text-white">Member dashboard is locked</CardTitle>
-            <CardDescription className="text-[#8b949e]">
-              Purchase the $8/month membership, then unlock this browser with your purchase email.
+            <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500/20 text-cyan-300">
+              <Lock className="h-5 w-5" />
+            </div>
+            <CardTitle>Subscriber dashboard</CardTitle>
+            <CardDescription>
+              Unlock company risk rankings, timeline analytics, and interview-stage breakdowns.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-5">
-            {params.unlock === "not-found" && (
-              <p className="rounded-md border border-[#f85149]/40 bg-[#f85149]/10 p-3 text-sm text-[#f85149]">
-                We could not find an active subscription for that email yet. Wait for webhook confirmation, then retry.
-              </p>
-            )}
-            {params.unlock === "success" && (
-              <p className="rounded-md border border-[#3fb950]/40 bg-[#3fb950]/10 p-3 text-sm text-[#3fb950]">
-                Browser unlocked successfully. Reload if this page does not update immediately.
-              </p>
-            )}
-
-            <LemonCheckoutButton
-              checkoutUrl={getCheckoutUrl()}
-              className="inline-flex rounded-md bg-[#238636] px-4 py-2 text-sm font-medium text-white hover:bg-[#2ea043]"
-            >
-              Buy membership
-            </LemonCheckoutButton>
-
-            <form action="/api/access" method="post" className="space-y-3 rounded-lg border border-[#2d333b] bg-[#0d1117] p-4">
-              <p className="text-sm text-[#c9d1d9]">Already purchased? Enter your checkout email:</p>
-              <input
-                type="email"
-                name="email"
-                required
-                placeholder="you@company.com"
-                className="h-10 w-full rounded-md border border-[#2d333b] bg-[#161b22] px-3 text-sm"
-              />
-              <Button type="submit" className="bg-[#1f6feb] hover:bg-[#388bfd]">
-                Unlock this browser
-              </Button>
-            </form>
-
-            <p className="text-xs text-[#8b949e]">Access is stored in the `{ACCESS_COOKIE}` cookie after verification.</p>
+          <CardContent className="flex flex-wrap gap-3">
+            <a href={paymentLink} target="_blank" rel="noreferrer">
+              <Button>Buy access for $8/mo</Button>
+            </a>
+            <Link href="/unlock">
+              <Button variant="outline">Already paid? Unlock now</Button>
+            </Link>
           </CardContent>
         </Card>
-      </main>
+      </div>
     );
   }
 
-  const snapshot = await getDashboardSnapshot();
+  let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
+  let reports: Awaited<ReturnType<typeof listRecentReports>> = [];
+  let error = "";
+
+  try {
+    [dashboard, reports] = await Promise.all([getDashboardData(), listRecentReports(20)]);
+  } catch {
+    error = "Database connection is unavailable. Configure DATABASE_URL to view analytics.";
+  }
+
+  if (error || !dashboard) {
+    return (
+      <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+        {error}
+      </div>
+    );
+  }
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-12">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-white">Member Dashboard</h1>
-        <Link href="/report" className="rounded-md border border-[#2d333b] bg-[#161b22] px-3 py-2 text-sm text-[#c9d1d9] hover:text-white">
-          Submit new report
-        </Link>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold text-slate-50">Insights dashboard</h1>
+        <p className="mt-2 text-slate-300">
+          Logged in as <span className="text-cyan-300">{access.email}</span>. Use this to avoid
+          high-risk interview loops.
+        </p>
       </div>
 
-      <section className="mt-6 rounded-xl border border-[#2d333b] bg-[#161b22] p-6">
-        <h2 className="text-xl font-semibold text-white">Highest ghosting risk companies</h2>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[620px] text-left text-sm">
-            <thead className="text-[#8b949e]">
-              <tr>
-                <th className="pb-2">Company</th>
-                <th className="pb-2">Ghosting rate</th>
-                <th className="pb-2">Reports</th>
-                <th className="pb-2">Avg response days</th>
-                <th className="pb-2">Avg rating</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.companies.map((company) => (
-                <tr key={company.id} className="border-t border-[#2d333b] text-[#c9d1d9]">
-                  <td className="py-3">
-                    <Link className="hover:text-[#58a6ff]" href={`/companies/${company.slug}`}>
-                      {company.name}
-                    </Link>
-                  </td>
-                  <td className="py-3">{company.ghosting_rate}%</td>
-                  <td className="py-3">{company.report_count}</td>
-                  <td className="py-3">{company.avg_response_days || "-"}</td>
-                  <td className="py-3">{company.avg_rating || "-"}/5</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Companies tracked" value={dashboard.totals.companiesTracked.toString()} />
+        <StatCard label="Reports logged" value={dashboard.totals.reportsLogged.toString()} />
+        <StatCard
+          label="Overall ghosting"
+          value={`${dashboard.totals.overallGhostingRate.toFixed(1)}%`}
+        />
+        <StatCard
+          label="Avg days waiting"
+          value={dashboard.totals.averageDaysWaiting.toFixed(1)}
+        />
       </section>
 
-      <section className="mt-6 rounded-xl border border-[#2d333b] bg-[#161b22] p-6">
-        <h2 className="text-xl font-semibold text-white">Latest interview outcomes</h2>
-        <ul className="mt-4 space-y-3">
-          {snapshot.latestReports.map((report, index) => (
-            <li key={`${report.company_slug}-${index}`} className="rounded-md border border-[#2d333b] bg-[#0d1117] p-3 text-sm text-[#c9d1d9]">
-              <Link className="font-medium text-[#58a6ff] hover:text-white" href={`/companies/${report.company_slug}`}>
-                {report.company_name}
-              </Link>{" "}
-              • {report.role_title} ({report.interview_stage}) • {report.response_days} days • {report.was_ghosted ? "Ghosted" : "Responded"}
-            </li>
-          ))}
-        </ul>
+      <section className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-red-300" />
+              Highest ghosting risk
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {dashboard.highestRiskCompanies.map((company) => (
+              <div key={company.slug} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <Link href={`/companies/${company.slug}`} className="font-medium text-slate-100 hover:underline">
+                    {company.name}
+                  </Link>
+                  <span className="text-red-300">{company.ghostingRate.toFixed(1)}%</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {company.totalReports} reports, {company.avgDaysWaited.toFixed(1)} average days waiting
+                </p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingDown className="h-4 w-4 text-emerald-300" />
+              Best responder list
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {dashboard.fastestResponders.map((company) => (
+              <div key={company.slug} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <Link href={`/companies/${company.slug}`} className="font-medium text-slate-100 hover:underline">
+                    {company.name}
+                  </Link>
+                  <span className="text-emerald-300">{company.ghostingRate.toFixed(1)}%</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">
+                  {company.totalReports} reports, {company.avgDaysWaited.toFixed(1)} average days waiting
+                </p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       </section>
-    </main>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent candidate experiences</CardTitle>
+          <CardDescription>Newest submissions across all companies</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {reports.map((report) => (
+            <article key={report.id} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                <Link
+                  href={`/companies/${report.companySlug}`}
+                  className="font-medium text-slate-100 hover:underline"
+                >
+                  {report.companyName}
+                </Link>
+                <span className="text-slate-400">{report.roleTitle}</span>
+                <span className="text-slate-400">{report.interviewStage}</span>
+                <span className="text-slate-400">{format(new Date(report.interviewDate), "MMM d, yyyy")}</span>
+              </div>
+              <p className="mt-2 text-sm text-slate-300">{report.narrative}</p>
+            </article>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardDescription>{label}</CardDescription>
+        <CardTitle className="text-3xl text-cyan-300">{value}</CardTitle>
+      </CardHeader>
+    </Card>
   );
 }

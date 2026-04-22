@@ -1,71 +1,73 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
 import { CompanyCard } from "@/components/CompanyCard";
 import { SearchFilters } from "@/components/SearchFilters";
-import { LemonCheckoutButton } from "@/components/LemonCheckoutButton";
-import { hasPaidAccess } from "@/lib/access";
-import { listCompanies } from "@/lib/database";
-import { getCheckoutUrl } from "@/lib/lemonsqueezy";
+import { listCompanies, listIndustries } from "@/lib/database";
 
 export const metadata: Metadata = {
-  title: "Search Company Ghosting Rates",
-  description: "Search company interview ghosting rates and candidate-reported hiring outcomes before applying."
+  title: "Search Companies",
+  description:
+    "Search companies by ghosting rate and candidate-reported interview experience."
 };
 
+export const dynamic = "force-dynamic";
+
 type SearchPageProps = {
-  searchParams: Promise<{
+  searchParams?: Promise<{
     q?: string;
     industry?: string;
-    minGhosting?: string;
   }>;
 };
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {
-  const params = await searchParams;
-  const isMember = hasPaidAccess(await cookies());
-  const minGhosting = Number(params.minGhosting);
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const query = resolvedSearchParams?.q?.trim() || "";
+  const industry = resolvedSearchParams?.industry?.trim() || "";
 
-  const companies = await listCompanies({
-    query: params.q,
-    industry: isMember ? params.industry : undefined,
-    minGhostingRate: isMember && Number.isFinite(minGhosting) ? minGhosting : undefined,
-    limit: isMember ? 60 : 8
-  });
+  let companies = [] as Awaited<ReturnType<typeof listCompanies>>;
+  let industries = [] as string[];
+  let error = "";
+
+  try {
+    [companies, industries] = await Promise.all([
+      listCompanies({ query, industry }),
+      listIndustries()
+    ]);
+  } catch {
+    error = "Database connection is unavailable. Configure DATABASE_URL to use live data.";
+  }
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-12">
-      <h1 className="text-3xl font-bold text-white">Company Ghosting Search</h1>
-      <p className="mt-2 text-[#8b949e]">
-        Search interview ghosting patterns before committing your time. Members unlock deep filtering and full result sets.
-      </p>
-
-      <div className="mt-6">
-        <SearchFilters locked={!isMember} />
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold text-slate-50">Company Search</h1>
+        <p className="mt-2 max-w-3xl text-slate-300">
+          Look up hiring behavior before applying. Use ghosting rate and average wait time to
+          prioritize employers that close the loop with candidates.
+        </p>
       </div>
 
-      {!isMember && (
-        <div className="mt-6 rounded-xl border border-[#2d333b] bg-[#161b22] p-4 text-sm text-[#c9d1d9]">
-          <p>Showing public preview data. Upgrade to unlock complete company rankings, role-level patterns, and risk alerts.</p>
-          <LemonCheckoutButton
-            checkoutUrl={getCheckoutUrl()}
-            className="mt-3 inline-flex rounded-md bg-[#238636] px-4 py-2 font-medium text-white hover:bg-[#2ea043]"
-          >
-            Unlock full search for $8/month
-          </LemonCheckoutButton>
+      <Suspense>
+        <SearchFilters industries={industries} />
+      </Suspense>
+
+      {error ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+          {error}
         </div>
-      )}
+      ) : null}
 
-      <div className="mt-6 grid gap-4">
-        {companies.length === 0 ? (
-          <p className="rounded-lg border border-[#2d333b] bg-[#161b22] p-6 text-[#8b949e]">
-            No matching companies yet. Try broadening your search or submit the first report.
-          </p>
-        ) : (
-          companies.map((company) => (
-            <CompanyCard key={company.id} company={company} showLockedDetails={!isMember} />
-          ))
-        )}
+      {!error && companies.length === 0 ? (
+        <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-4 py-8 text-center text-slate-300">
+          No companies match your filters yet. Submit a report to add signal for other candidates.
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {companies.map((company) => (
+          <CompanyCard key={company.slug} company={company} />
+        ))}
       </div>
-    </main>
+    </div>
   );
 }
