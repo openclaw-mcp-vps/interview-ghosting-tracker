@@ -1,78 +1,78 @@
 import Link from "next/link";
-import { Building2, Clock3, ShieldAlert } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import type { CompanySummary } from "@/lib/database";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 
-function riskBand(ghostingRate: number) {
-  if (ghostingRate >= 70) {
-    return { label: "High risk", className: "border-red-500/40 text-red-300" };
+type CompanyCardProps = {
+  company: CompanySummary;
+};
+
+function formatLastReported(value: string | null): string {
+  if (!value) {
+    return "No reports yet";
   }
 
-  if (ghostingRate >= 40) {
-    return {
-      label: "Moderate risk",
-      className: "border-amber-500/40 text-amber-200"
-    };
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    return "No reports yet";
   }
 
-  return { label: "Lower risk", className: "border-emerald-500/40 text-emerald-200" };
+  return formatDistanceToNow(parsed, { addSuffix: true });
 }
 
-export function CompanyCard({ company }: { company: CompanySummary }) {
-  const risk = riskBand(company.ghostingRate);
+function ghostingRateClass(rate: number): string {
+  if (rate >= 70) return "value-danger";
+  if (rate >= 40) return "value-warn";
+  return "value-ok";
+}
 
+export function CompanyCard({ company }: CompanyCardProps) {
   return (
-    <Link
-      href={`/companies/${company.slug}`}
-      className="group block h-full transition-transform hover:-translate-y-0.5"
-    >
-      <Card className="h-full border-slate-800/90 group-hover:border-cyan-500/40 group-hover:bg-slate-900/90">
-        <CardHeader>
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <CardTitle className="text-slate-50">{company.name}</CardTitle>
-              <p className="mt-1 text-sm text-slate-400">
-                {company.industry || "Unspecified industry"}
-              </p>
-            </div>
-            <Badge className={risk.className}>{risk.label}</Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-400">
-                <ShieldAlert className="h-4 w-4" />
-                Ghosting
-              </div>
-              <div className="text-lg font-semibold text-slate-100">
-                {company.ghostingRate.toFixed(1)}%
-              </div>
-            </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-              <div className="mb-1 flex items-center gap-1.5 text-slate-400">
-                <Building2 className="h-4 w-4" />
-                Reports
-              </div>
-              <div className="text-lg font-semibold text-slate-100">
-                {company.totalReports}
-              </div>
-            </div>
-          </div>
+    <article className="panel rounded-xl p-5 transition hover:border-slate-600/90">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-100">{company.name}</h3>
+          <p className="mt-1 text-sm text-slate-400">{company.industry || "Industry not specified"}</p>
+        </div>
+        <div className="text-right">
+          <p className={`text-2xl font-bold ${ghostingRateClass(company.ghostingRate)}`}>
+            {company.ghostingRate.toFixed(1)}%
+          </p>
+          <p className="text-xs uppercase tracking-wide text-slate-500">ghosting rate</p>
+        </div>
+      </div>
 
-          <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Avg wait: {company.avgDaysWaited.toFixed(1)} days</span>
-            <span className="flex items-center gap-1">
-              <Clock3 className="h-3.5 w-3.5" />
-              {company.lastReportedAt
-                ? `${formatDistanceToNow(new Date(company.lastReportedAt))} ago`
-                : "No recent reports"}
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    </Link>
+      <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+        <div className="metric">
+          <div className="text-slate-400">Reports</div>
+          <div className="mt-1 text-base font-semibold text-slate-100">{company.totalReports}</div>
+        </div>
+        <div className="metric">
+          <div className="text-slate-400">Avg wait</div>
+          <div className="mt-1 text-base font-semibold text-slate-100">{company.avgDaysWaited.toFixed(1)} days</div>
+        </div>
+        <div className="metric">
+          <div className="text-slate-400">Latest</div>
+          <div className="mt-1 text-sm font-semibold text-slate-100">{formatLastReported(company.lastReportedAt)}</div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 text-sm">
+        <Link href={`/companies/${company.slug}`} className="btn-primary">
+          View profile
+        </Link>
+        {company.website ? (
+          <a
+            href={company.website}
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-300 underline underline-offset-2 hover:text-blue-200"
+          >
+            Visit website
+          </a>
+        ) : (
+          <span className="text-slate-500">Website unavailable</span>
+        )}
+      </div>
+    </article>
   );
 }

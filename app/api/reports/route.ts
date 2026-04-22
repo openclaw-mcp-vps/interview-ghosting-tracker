@@ -1,67 +1,95 @@
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { NextResponse } from "next/server";
-import { createReport, listRecentReports } from "@/lib/database";
+import { createGhostingReport, getCompanyProfileBySlug, getReportsByCompanyId } from "@/lib/database";
+import { ACCESS_COOKIE_NAME, readAccessCookieValue } from "@/lib/lemonsqueezy";
+
+export const runtime = "nodejs";
 
 const reportSchema = z.object({
   companyName: z.string().min(2),
-  website: z.string().url().optional().or(z.literal("")),
-  industry: z.string().max(80).optional().or(z.literal("")),
-  headquarters: z.string().max(120).optional().or(z.literal("")),
+  companyWebsite: z.union([z.literal(""), z.string().url()]).optional(),
+  industry: z.string().max(80).optional(),
   roleTitle: z.string().min(2),
-  candidateSeniority: z.enum(["junior", "mid", "senior", "staff", "executive"]),
-  interviewStage: z.enum([
-    "recruiter-screen",
-    "hiring-manager",
-    "technical",
-    "panel",
-    "final",
-    "other"
-  ]),
-  interviewDate: z.string().refine((value) => !Number.isNaN(Date.parse(value))),
-  daysWaited: z.number().int().min(1).max(365),
-  followUpCount: z.number().int().min(0).max(25),
-  outcome: z.enum(["ghosted", "replied", "rejected", "offer"]),
-  narrative: z.string().min(80).max(2400)
+  candidateFunction: z.string().min(2),
+  candidateLevel: z.string().min(2),
+  interviewStage: z.string().min(2),
+  interviewCount: z.number().int().min(1).max(20),
+  daysWaited: z.number().int().min(0).max(365),
+  lastContactDate: z.string().min(1),
+  location: z.string().max(120).optional(),
+  experience: z.string().min(80).max(4000),
+  eventualResponse: z.boolean(),
+  publicConsent: z.boolean(),
+  reporterEmail: z.union([z.literal(""), z.string().email()]).optional()
 });
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const limit = Number(url.searchParams.get("limit") ?? 20);
-
+export async function POST(request: NextRequest) {
   try {
-    const reports = await listRecentReports(
-      Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 20
-    );
+    const body = await request.json();
+    const parsed = reportSchema.safeParse(body);
 
-    return NextResponse.json({ reports });
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: "Invalid report payload",
+          details: parsed.error.flatten()
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!parsed.data.publicConsent) {
+      return NextResponse.json(
+        {
+          error: "Public consent is required to publish this report"
+        },
+        { status: 400 }
+      );
+    }
+
+    const report = await createGhostingReport({
+      ...parsed.data,
+      companyWebsite: parsed.data.companyWebsite || undefined,
+      reporterEmail: parsed.data.reporterEmail || undefined
+    });
+
+    return NextResponse.json(report, { status: 201 });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to load report data.";
-
+    const message = error instanceof Error ? error.message : "Failed to create report";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
-export async function POST(request: Request) {
-  try {
-    const rawBody = await request.json();
-    const parsed = reportSchema.parse(rawBody);
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const slug = searchParams.get("slug");
 
-    const result = await createReport(parsed);
-
-    return NextResponse.json({
-      success: true,
-      companySlug: result.companySlug
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      const firstIssue = error.issues[0]?.message ?? "Invalid input.";
-      return NextResponse.json({ error: firstIssue }, { status: 400 });
-    }
-
-    const message =
-      error instanceof Error ? error.message : "Failed to submit report.";
-
-    return NextResponse.json({ error: message }, { status: 500 });
+  if (!slug) {
+    return NextResponse.json({ error: "Missing slug query parameter" }, { status: 400 });
   }
+
+  const company = await getCompanyProfileBySlug(slug);
+
+  if (!company) {
+    return NextResponse.json({ error: "Company not found" }, { status: 404 });
+  }
+
+  const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") || "50") || 50));
+
+  const access = readAccessCookieValue(request.cookies.get(ACCESS_COOKIE_NAME)?.value);
+  const hasPremium = Boolean(access);
+
+  const reports = await getReportsByCompanyId(company.id, limit);
+
+  return NextResponse.json({
+    company,
+    premium: hasPremium,
+    reports: hasPremium
+      ? reports
+      : reports.map((report) => ({
+          ...report,
+          experience:
+            report.experience.length > 180 ? `${report.experience.slice(0, 180)}...` : report.experience
+        }))
+  });
 }

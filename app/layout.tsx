@@ -1,49 +1,40 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
-import type { ReactNode } from "react";
-import "@/app/globals.css";
+import "./globals.css";
 
-const display = Space_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-display",
-  display: "swap"
-});
-
-const body = IBM_Plex_Sans({
-  subsets: ["latin"],
-  variable: "--font-body",
-  weight: ["400", "500", "600", "700"],
-  display: "swap"
-});
+const siteUrl = "https://interview-ghosting-tracker.com";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://interview-ghosting-tracker.com"),
+  metadataBase: new URL(siteUrl),
   title: {
     default: "Interview Ghosting Tracker",
     template: "%s | Interview Ghosting Tracker"
   },
   description:
-    "Track and expose companies that ghost candidates after interviews. Search hiring behavior before investing your time.",
+    "Track companies that ghost candidates after interviews. Search ghosting rates, read candidate experiences, and avoid time-wasting hiring funnels.",
   keywords: [
     "interview ghosting",
-    "job search transparency",
-    "candidate experience",
-    "hiring accountability"
+    "company hiring transparency",
+    "job search research",
+    "candidate experiences",
+    "ghosting database"
   ],
   openGraph: {
-    type: "website",
-    url: "/",
     title: "Interview Ghosting Tracker",
     description:
-      "Community-sourced data on interview ghosting so candidates can avoid high-risk hiring pipelines.",
-    siteName: "Interview Ghosting Tracker"
+      "Know how companies treat candidates before you spend weeks interviewing.",
+    url: siteUrl,
+    siteName: "Interview Ghosting Tracker",
+    type: "website"
   },
   twitter: {
     card: "summary_large_image",
     title: "Interview Ghosting Tracker",
     description:
-      "Search real ghosting rates, contribute your interview experience, and avoid repeat time-wasting processes."
+      "Public hiring-behavior intelligence for candidates who are done getting ghosted."
+  },
+  alternates: {
+    canonical: "/"
   },
   robots: {
     index: true,
@@ -51,36 +42,44 @@ export const metadata: Metadata = {
   }
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#0d1117"
+};
+
+export default function RootLayout({
+  children
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${display.variable} ${body.variable} bg-[#0d1117] text-slate-100 antialiased`}>
-        <div className="grid-lines min-h-screen">
-          <header className="sticky top-0 z-40 border-b border-slate-800/90 bg-[#0d1117]/90 backdrop-blur">
-            <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
-              <Link href="/" className="text-sm font-semibold tracking-wide text-cyan-300">
-                Interview Ghosting Tracker
+    <html lang="en">
+      <body>
+        <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 backdrop-blur">
+          <div className="container-page flex items-center justify-between gap-3 py-4">
+            <Link href="/" className="text-sm font-semibold tracking-wide text-slate-100">
+              Interview Ghosting Tracker
+            </Link>
+            <nav className="flex items-center gap-1 text-sm text-slate-300">
+              <Link href="/search" className="rounded-md px-3 py-2 hover:bg-slate-800">
+                Search
               </Link>
-
-              <nav className="flex items-center gap-2 text-sm sm:gap-3">
-                <Link className="rounded px-2 py-1 text-slate-300 hover:bg-slate-900" href="/search">
-                  Search
-                </Link>
-                <Link className="rounded px-2 py-1 text-slate-300 hover:bg-slate-900" href="/report">
-                  Report
-                </Link>
-                <Link className="rounded px-2 py-1 text-slate-300 hover:bg-slate-900" href="/dashboard">
-                  Dashboard
-                </Link>
-                <Link className="rounded px-2 py-1 text-slate-300 hover:bg-slate-900" href="/unlock">
-                  Unlock
-                </Link>
-              </nav>
-            </div>
-          </header>
-
-          <main className="mx-auto w-full max-w-6xl px-4 pb-16 pt-8 sm:px-6">{children}</main>
-        </div>
+              <Link href="/submit-report" className="rounded-md px-3 py-2 hover:bg-slate-800">
+                Submit Report
+              </Link>
+              <Link href="/dashboard" className="rounded-md px-3 py-2 hover:bg-slate-800">
+                Premium
+              </Link>
+            </nav>
+          </div>
+        </header>
+        <main>{children}</main>
+        <footer className="border-t border-slate-800/80 py-8">
+          <div className="container-page flex flex-col gap-3 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+            <p>Built for candidates who want hiring transparency.</p>
+            <p>Independent and candidate-first.</p>
+          </div>
+        </footer>
       </body>
     </html>
   );

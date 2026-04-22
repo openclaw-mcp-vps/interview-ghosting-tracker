@@ -11,12 +11,12 @@ NICHE: job-search
 PRICE: $$8/mo
 
 ARCHITECTURE SPEC:
-A Next.js web app with PostgreSQL database for tracking company ghosting incidents. Users submit ghosting reports, search company profiles, and view aggregated ghosting statistics with subscription-gated access to detailed insights.
+A Next.js app with PostgreSQL database for tracking company interview ghosting incidents. Users submit ghosting reports, search company profiles with aggregated ghosting rates, and access detailed experiences behind a paywall.
 
 PLANNED FILES:
 - app/page.tsx
 - app/companies/[slug]/page.tsx
-- app/report/page.tsx
+- app/submit-report/page.tsx
 - app/search/page.tsx
 - app/dashboard/page.tsx
 - app/api/companies/route.ts
@@ -29,7 +29,7 @@ PLANNED FILES:
 - lib/lemonsqueezy.ts
 - prisma/schema.prisma
 
-DEPENDENCIES: next, react, typescript, tailwindcss, prisma, @prisma/client, postgresql, @lemonsqueezy/lemonsqueezy.js, next-auth, zod, react-hook-form, lucide-react, date-fns
+DEPENDENCIES: next, react, typescript, tailwindcss, prisma, @prisma/client, postgres, @lemonsqueezy/lemonsqueezy.js, next-auth, zod, react-hook-form, lucide-react, date-fns
 
 REQUIREMENTS:
 - Next.js 15 with App Router (app/ directory)
@@ -73,3 +73,8 @@ After creating all files:
 
 Do NOT use placeholder text. Write real, helpful content for the landing page
 and the tool itself. The tool should actually work and provide value.
+
+
+PREVIOUS ATTEMPT FAILED WITH:
+Codex timed out after 2400s
+Please fix the above errors and regenerate.

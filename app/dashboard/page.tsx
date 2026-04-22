@@ -1,177 +1,221 @@
-import Link from "next/link";
 import type { Metadata } from "next";
-import { Lock, TrendingDown, TrendingUp } from "lucide-react";
-import { format } from "date-fns";
-import { getAccessContext } from "@/lib/access";
-import { getDashboardData, listRecentReports } from "@/lib/database";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+import { cookies } from "next/headers";
+import { formatDistanceToNow } from "date-fns";
+import { ACCESS_COOKIE_NAME, readAccessCookieValue } from "@/lib/lemonsqueezy";
+import { getDashboardMetrics, getRecentReports, getStageInsights, isDatabaseConfigured } from "@/lib/database";
 
 export const metadata: Metadata = {
-  title: "Dashboard",
+  title: "Premium Ghosting Dashboard",
   description:
-    "Subscriber analytics for interview ghosting trends, high-risk companies, and candidate timelines."
+    "Premium analytics for interview ghosting trends, high-risk companies, and recent candidate experiences."
 };
 
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
-  const paymentLink = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK as string;
+type DashboardPageProps = {
+  searchParams: Promise<{ status?: string }>;
+};
 
-  const access = await getAccessContext();
-
-  if (!access.hasAccess) {
-    return (
-      <div className="mx-auto max-w-2xl space-y-5 py-10">
-        <Card className="border-cyan-500/30 bg-cyan-500/5">
-          <CardHeader>
-            <div className="mb-2 inline-flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500/20 text-cyan-300">
-              <Lock className="h-5 w-5" />
-            </div>
-            <CardTitle>Subscriber dashboard</CardTitle>
-            <CardDescription>
-              Unlock company risk rankings, timeline analytics, and interview-stage breakdowns.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-3">
-            <a href={paymentLink} target="_blank" rel="noreferrer">
-              <Button>Buy access for $8/mo</Button>
-            </a>
-            <Link href="/unlock">
-              <Button variant="outline">Already paid? Unlock now</Button>
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
-  let reports: Awaited<ReturnType<typeof listRecentReports>> = [];
-  let error = "";
-
-  try {
-    [dashboard, reports] = await Promise.all([getDashboardData(), listRecentReports(20)]);
-  } catch {
-    error = "Database connection is unavailable. Configure DATABASE_URL to view analytics.";
-  }
-
-  if (error || !dashboard) {
-    return (
-      <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
-        {error}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-50">Insights dashboard</h1>
-        <p className="mt-2 text-slate-300">
-          Logged in as <span className="text-cyan-300">{access.email}</span>. Use this to avoid
-          high-risk interview loops.
-        </p>
-      </div>
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Companies tracked" value={dashboard.totals.companiesTracked.toString()} />
-        <StatCard label="Reports logged" value={dashboard.totals.reportsLogged.toString()} />
-        <StatCard
-          label="Overall ghosting"
-          value={`${dashboard.totals.overallGhostingRate.toFixed(1)}%`}
-        />
-        <StatCard
-          label="Avg days waiting"
-          value={dashboard.totals.averageDaysWaiting.toFixed(1)}
-        />
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-red-300" />
-              Highest ghosting risk
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {dashboard.highestRiskCompanies.map((company) => (
-              <div key={company.slug} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <Link href={`/companies/${company.slug}`} className="font-medium text-slate-100 hover:underline">
-                    {company.name}
-                  </Link>
-                  <span className="text-red-300">{company.ghostingRate.toFixed(1)}%</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">
-                  {company.totalReports} reports, {company.avgDaysWaited.toFixed(1)} average days waiting
-                </p>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingDown className="h-4 w-4 text-emerald-300" />
-              Best responder list
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {dashboard.fastestResponders.map((company) => (
-              <div key={company.slug} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <Link href={`/companies/${company.slug}`} className="font-medium text-slate-100 hover:underline">
-                    {company.name}
-                  </Link>
-                  <span className="text-emerald-300">{company.ghostingRate.toFixed(1)}%</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">
-                  {company.totalReports} reports, {company.avgDaysWaited.toFixed(1)} average days waiting
-                </p>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      </section>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Recent candidate experiences</CardTitle>
-          <CardDescription>Newest submissions across all companies</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {reports.map((report) => (
-            <article key={report.id} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                <Link
-                  href={`/companies/${report.companySlug}`}
-                  className="font-medium text-slate-100 hover:underline"
-                >
-                  {report.companyName}
-                </Link>
-                <span className="text-slate-400">{report.roleTitle}</span>
-                <span className="text-slate-400">{report.interviewStage}</span>
-                <span className="text-slate-400">{format(new Date(report.interviewDate), "MMM d, yyyy")}</span>
-              </div>
-              <p className="mt-2 text-sm text-slate-300">{report.narrative}</p>
-            </article>
-          ))}
-        </CardContent>
-      </Card>
-    </div>
-  );
+function ghostingRateClass(rate: number): string {
+  if (rate >= 70) return "value-danger";
+  if (rate >= 40) return "value-warn";
+  return "value-ok";
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function toRelativeDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    return "unknown time";
+  }
+
+  return formatDistanceToNow(parsed, { addSuffix: true });
+}
+
+function renderStatusMessage(status: string | undefined): string | null {
+  if (status === "unlocked") {
+    return "Premium access confirmed for your email. You can now view full reports and analytics.";
+  }
+
+  if (status === "not-found") {
+    return "No paid subscription found for that email yet. Complete checkout, then try activation again.";
+  }
+
+  if (status === "invalid-email") {
+    return "Please enter a valid email address to activate access.";
+  }
+
+  return null;
+}
+
+export default async function DashboardPage({ searchParams }: DashboardPageProps) {
+  const params = await searchParams;
+  const cookieStore = await cookies();
+  const access = readAccessCookieValue(cookieStore.get(ACCESS_COOKIE_NAME)?.value);
+  const hasPremium = Boolean(access);
+
+  const buyLink = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK;
+  const statusMessage = renderStatusMessage(params.status);
+
+  if (!hasPremium) {
+    return (
+      <section className="container-page py-10 sm:py-14">
+        <div className="mx-auto max-w-3xl panel rounded-2xl p-6 sm:p-8">
+          <span className="kicker">Premium required</span>
+          <h1 className="mt-4 text-3xl font-semibold text-slate-100 sm:text-4xl">Unlock the ghosting intelligence dashboard</h1>
+          <p className="mt-3 text-sm text-slate-300 sm:text-base">
+            Premium gives you the full candidate narratives, stage risk trends, and company watchlist used to avoid
+            high-friction hiring funnels.
+          </p>
+
+          <ul className="mt-5 grid gap-2 text-sm text-slate-200">
+            <li>• Full report details behind each company profile</li>
+            <li>• Stage-level ghosting risk and wait-time analytics</li>
+            <li>• Fresh report feed to track current hiring behavior</li>
+            <li>• High-risk company leaderboard from verified submissions</li>
+          </ul>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <a href={buyLink} className="btn-primary">
+              Buy premium for $8/month
+            </a>
+            <Link href="/search" className="btn-secondary">
+              Continue with free search
+            </Link>
+          </div>
+
+          <div className="mt-8 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+            <h2 className="text-base font-semibold text-slate-100">Already purchased?</h2>
+            <p className="mt-1 text-sm text-slate-300">Enter the same email you used at checkout to activate this browser.</p>
+
+            {statusMessage ? (
+              <p className="mt-3 rounded-md border border-slate-600 bg-slate-800/60 px-3 py-2 text-sm text-slate-200">
+                {statusMessage}
+              </p>
+            ) : null}
+
+            <form action="/api/access/activate" method="POST" className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+              <input type="hidden" name="redirectTo" value="/dashboard" />
+              <input name="email" type="email" required className="input" placeholder="you@domain.com" />
+              <button type="submit" className="btn-primary">
+                Activate access
+              </button>
+            </form>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const [metrics, stageInsights, recentReports] = await Promise.all([
+    getDashboardMetrics(),
+    getStageInsights(8),
+    getRecentReports(12)
+  ]);
+
   return (
-    <Card>
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-3xl text-cyan-300">{value}</CardTitle>
-      </CardHeader>
-    </Card>
+    <section className="container-page py-10 sm:py-14">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <span className="kicker">Premium dashboard</span>
+          <h1 className="mt-3 text-3xl font-semibold text-slate-100 sm:text-4xl">Ghosting risk intelligence</h1>
+          <p className="mt-2 text-sm text-slate-300 sm:text-base">Use this as a shortlist filter before you start interview loops.</p>
+        </div>
+      </div>
+
+      {!isDatabaseConfigured() ? (
+        <div className="panel rounded-xl p-5 text-sm text-slate-300">
+          DATABASE_URL is not configured, so live premium analytics are unavailable.
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="metric">
+          <p className="text-xs uppercase tracking-wide text-slate-400">Companies tracked</p>
+          <p className="mt-1 text-3xl font-semibold text-slate-100">{metrics.totalCompanies}</p>
+        </div>
+        <div className="metric">
+          <p className="text-xs uppercase tracking-wide text-slate-400">Reports collected</p>
+          <p className="mt-1 text-3xl font-semibold text-slate-100">{metrics.totalReports}</p>
+        </div>
+        <div className="metric">
+          <p className="text-xs uppercase tracking-wide text-slate-400">Overall ghosting rate</p>
+          <p className={`mt-1 text-3xl font-semibold ${ghostingRateClass(metrics.overallGhostingRate)}`}>
+            {metrics.overallGhostingRate.toFixed(1)}%
+          </p>
+        </div>
+        <div className="metric">
+          <p className="text-xs uppercase tracking-wide text-slate-400">Median wait</p>
+          <p className="mt-1 text-3xl font-semibold text-slate-100">{metrics.medianWaitDays.toFixed(1)}d</p>
+        </div>
+      </div>
+
+      <div className="mt-7 grid gap-6 lg:grid-cols-2">
+        <article className="panel rounded-xl p-5">
+          <h2 className="text-lg font-semibold text-slate-100">Highest-risk companies</h2>
+          <div className="mt-4 space-y-3">
+            {metrics.worstCompanies.map((company) => (
+              <div key={company.id} className="rounded-lg border border-slate-700/90 bg-slate-900/60 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <Link href={`/companies/${company.slug}`} className="font-semibold text-slate-100 hover:text-blue-300">
+                      {company.name}
+                    </Link>
+                    <p className="text-xs text-slate-400">{company.totalReports} reports</p>
+                  </div>
+                  <p className={`text-lg font-semibold ${ghostingRateClass(company.ghostingRate)}`}>
+                    {company.ghostingRate.toFixed(1)}%
+                  </p>
+                </div>
+              </div>
+            ))}
+            {metrics.worstCompanies.length === 0 ? <p className="text-sm text-slate-400">No data yet.</p> : null}
+          </div>
+        </article>
+
+        <article className="panel rounded-xl p-5">
+          <h2 className="text-lg font-semibold text-slate-100">Ghosting risk by stage</h2>
+          <div className="mt-4 space-y-3">
+            {stageInsights.map((insight) => (
+              <div key={insight.stage} className="rounded-lg border border-slate-700/90 bg-slate-900/60 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-slate-200">{insight.stage.replace(/_/g, " ")}</p>
+                    <p className="text-xs text-slate-400">{insight.reports} reports · avg wait {insight.avgDaysWaited.toFixed(1)} days</p>
+                  </div>
+                  <p className={`text-lg font-semibold ${ghostingRateClass(insight.ghostingRate)}`}>
+                    {insight.ghostingRate.toFixed(1)}%
+                  </p>
+                </div>
+              </div>
+            ))}
+            {stageInsights.length === 0 ? <p className="text-sm text-slate-400">No stage data yet.</p> : null}
+          </div>
+        </article>
+      </div>
+
+      <article className="panel mt-6 rounded-xl p-5">
+        <h2 className="text-lg font-semibold text-slate-100">Recent candidate reports</h2>
+        <div className="mt-4 grid gap-3">
+          {recentReports.map((report) => (
+            <div key={report.id} className="rounded-lg border border-slate-700/90 bg-slate-900/60 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <Link href={`/companies/${report.companySlug}`} className="font-semibold text-slate-100 hover:text-blue-300">
+                    {report.companyName}
+                  </Link>
+                  <p className="text-xs text-slate-400">
+                    {report.roleTitle} · {report.candidateLevel} · {report.interviewStage.replace(/_/g, " ")}
+                  </p>
+                </div>
+                <p className="text-xs text-slate-400">{toRelativeDate(report.createdAt)}</p>
+              </div>
+              <p className="mt-2 line-clamp-3 text-sm text-slate-200">{report.experience}</p>
+            </div>
+          ))}
+          {recentReports.length === 0 ? <p className="text-sm text-slate-400">No reports yet.</p> : null}
+        </div>
+      </article>
+    </section>
   );
 }

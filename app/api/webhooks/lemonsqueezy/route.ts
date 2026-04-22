@@ -1,102 +1,38 @@
-import { NextResponse } from "next/server";
-import {
-  readStripeIdentity,
-  type StripeWebhookPayload,
-  verifyStripeSignature
-} from "@/lib/lemonsqueezy";
-import {
-  updateSubscriptionStatusByCustomerId,
-  upsertSubscription
-} from "@/lib/database";
+import { NextRequest, NextResponse } from "next/server";
+import { upsertPaidAccess } from "@/lib/database";
+import { extractPaidAccessFromStripe, parseStripeWebhookEvent, verifyStripeWebhookSignature } from "@/lib/lemonsqueezy";
 
 export const runtime = "nodejs";
 
-export async function POST(request: Request) {
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  if (!webhookSecret) {
-    return NextResponse.json(
-      { error: "STRIPE_WEBHOOK_SECRET is not configured." },
-      { status: 500 }
-    );
-  }
-
+export async function POST(request: NextRequest) {
   const signatureHeader = request.headers.get("stripe-signature");
   const rawBody = await request.text();
 
-  const valid = verifyStripeSignature({
-    rawBody,
-    signatureHeader,
-    secret: webhookSecret
-  });
-
-  if (!valid) {
-    return NextResponse.json({ error: "Invalid signature." }, { status: 400 });
+  if (!verifyStripeWebhookSignature(rawBody, signatureHeader)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  let payload: StripeWebhookPayload;
   try {
-    payload = JSON.parse(rawBody) as StripeWebhookPayload;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON payload." }, { status: 400 });
-  }
+    const event = parseStripeWebhookEvent(rawBody);
+    const paidAccess = extractPaidAccessFromStripe(event);
 
-  const identity = readStripeIdentity(payload);
-
-  try {
-    switch (payload.type) {
-      case "checkout.session.completed":
-      case "invoice.payment_succeeded": {
-        if (identity.email) {
-          await upsertSubscription({
-            email: identity.email,
-            status: "active",
-            stripeCustomerId: identity.stripeCustomerId,
-            stripeSubscriptionId: identity.stripeSubscriptionId
-          });
-        }
-        break;
-      }
-      case "invoice.payment_failed": {
-        if (identity.email) {
-          await upsertSubscription({
-            email: identity.email,
-            status: "past_due",
-            stripeCustomerId: identity.stripeCustomerId,
-            stripeSubscriptionId: identity.stripeSubscriptionId
-          });
-        } else if (identity.stripeCustomerId) {
-          await updateSubscriptionStatusByCustomerId({
-            stripeCustomerId: identity.stripeCustomerId,
-            status: "past_due"
-          });
-        }
-        break;
-      }
-      case "customer.subscription.deleted": {
-        if (identity.email) {
-          await upsertSubscription({
-            email: identity.email,
-            status: "canceled",
-            stripeCustomerId: identity.stripeCustomerId,
-            stripeSubscriptionId: identity.stripeSubscriptionId
-          });
-        } else if (identity.stripeCustomerId) {
-          await updateSubscriptionStatusByCustomerId({
-            stripeCustomerId: identity.stripeCustomerId,
-            status: "canceled"
-          });
-        }
-        break;
-      }
-      default:
-        break;
+    if (!paidAccess) {
+      return NextResponse.json({ received: true, ignored: true });
     }
+
+    await upsertPaidAccess({
+      email: paidAccess.email,
+      status: paidAccess.status,
+      source: "stripe-webhook",
+      stripeCustomerId: paidAccess.stripeCustomerId,
+      stripeCheckoutSessionId: paidAccess.stripeCheckoutSessionId,
+      amountTotal: paidAccess.amountTotal,
+      currency: paidAccess.currency
+    });
+
+    return NextResponse.json({ received: true });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to process webhook.";
+    const message = error instanceof Error ? error.message : "Webhook processing failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  return NextResponse.json({ received: true });
 }

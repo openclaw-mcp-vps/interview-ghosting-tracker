@@ -1,73 +1,87 @@
-import { Suspense } from "react";
 import type { Metadata } from "next";
 import { CompanyCard } from "@/components/CompanyCard";
 import { SearchFilters } from "@/components/SearchFilters";
-import { listCompanies, listIndustries } from "@/lib/database";
+import { getCompanySummaries, isDatabaseConfigured, type SortMode } from "@/lib/database";
 
 export const metadata: Metadata = {
-  title: "Search Companies",
+  title: "Search Company Ghosting Rates",
   description:
-    "Search companies by ghosting rate and candidate-reported interview experience."
+    "Search companies by name, interview stage, and report volume to see which hiring processes are most likely to ghost candidates."
 };
 
 export const dynamic = "force-dynamic";
 
 type SearchPageProps = {
-  searchParams?: Promise<{
+  searchParams: Promise<{
     q?: string;
-    industry?: string;
+    stage?: string;
+    minReports?: string;
+    sort?: string;
   }>;
 };
 
-export default async function SearchPage({ searchParams }: SearchPageProps) {
-  const resolvedSearchParams = searchParams ? await searchParams : undefined;
-  const query = resolvedSearchParams?.q?.trim() || "";
-  const industry = resolvedSearchParams?.industry?.trim() || "";
+const sortModes: SortMode[] = ["ghosting_rate", "reports", "recent", "name"];
 
-  let companies = [] as Awaited<ReturnType<typeof listCompanies>>;
-  let industries = [] as string[];
-  let error = "";
-
-  try {
-    [companies, industries] = await Promise.all([
-      listCompanies({ query, industry }),
-      listIndustries()
-    ]);
-  } catch {
-    error = "Database connection is unavailable. Configure DATABASE_URL to use live data.";
+function toSortMode(value: string | undefined): SortMode {
+  if (value && sortModes.includes(value as SortMode)) {
+    return value as SortMode;
   }
 
+  return "ghosting_rate";
+}
+
+export default async function SearchPage({ searchParams }: SearchPageProps) {
+  const params = await searchParams;
+
+  const query = params.q?.trim() || "";
+  const stage = params.stage?.trim() || "";
+  const minReports = Math.max(0, Number(params.minReports || "0") || 0);
+  const sort = toSortMode(params.sort);
+
+  const companies = await getCompanySummaries({
+    query,
+    stage,
+    minReports,
+    sort,
+    limit: 80
+  });
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-50">Company Search</h1>
-        <p className="mt-2 max-w-3xl text-slate-300">
-          Look up hiring behavior before applying. Use ghosting rate and average wait time to
-          prioritize employers that close the loop with candidates.
+    <section className="container-page py-10 sm:py-14">
+      <div className="mb-6">
+        <h1 className="text-3xl font-semibold text-slate-100 sm:text-4xl">Search hiring behavior by company</h1>
+        <p className="mt-2 max-w-3xl text-sm text-slate-300 sm:text-base">
+          Filter by stage and report count to find companies with consistent follow-through and avoid ghost-heavy
+          interview loops.
         </p>
       </div>
 
-      <Suspense>
-        <SearchFilters industries={industries} />
-      </Suspense>
+      <SearchFilters query={query} stage={stage} minReports={minReports} sort={sort} />
 
-      {error ? (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
-          {error}
+      {!isDatabaseConfigured() ? (
+        <div className="panel mt-6 rounded-xl p-5 text-sm text-slate-300">
+          DATABASE_URL is not configured yet, so search results are unavailable. Add DATABASE_URL and submit reports to
+          populate company profiles.
         </div>
       ) : null}
 
-      {!error && companies.length === 0 ? (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-4 py-8 text-center text-slate-300">
-          No companies match your filters yet. Submit a report to add signal for other candidates.
-        </div>
-      ) : null}
+      <div className="mt-6 flex items-center justify-between text-sm text-slate-400">
+        <p>
+          Showing <span className="font-semibold text-slate-200">{companies.length}</span> companies
+        </p>
+      </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
         {companies.map((company) => (
-          <CompanyCard key={company.slug} company={company} />
+          <CompanyCard key={company.id} company={company} />
         ))}
       </div>
-    </div>
+
+      {isDatabaseConfigured() && companies.length === 0 ? (
+        <div className="panel mt-4 rounded-xl p-5 text-sm text-slate-300">
+          No companies match these filters yet. Try broadening your search or submit the first report.
+        </div>
+      ) : null}
+    </section>
   );
 }

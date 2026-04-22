@@ -1,23 +1,37 @@
-import { NextResponse } from "next/server";
-import { listCompanies } from "@/lib/database";
+import { NextRequest, NextResponse } from "next/server";
+import { getCompanySummaries, isDatabaseConfigured, type SortMode } from "@/lib/database";
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const q = url.searchParams.get("q")?.trim() ?? "";
-  const industry = url.searchParams.get("industry")?.trim() ?? "";
-  const limit = Number(url.searchParams.get("limit") ?? 24);
+export const runtime = "nodejs";
 
-  try {
-    const companies = await listCompanies({
-      query: q,
-      industry,
-      limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 24
-    });
+const sortModes: SortMode[] = ["ghosting_rate", "reports", "recent", "name"];
 
-    return NextResponse.json({ companies });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to load company data.";
-    return NextResponse.json({ error: message }, { status: 500 });
+function toSort(value: string | null): SortMode {
+  if (value && sortModes.includes(value as SortMode)) {
+    return value as SortMode;
   }
+
+  return "ghosting_rate";
+}
+
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+
+  const query = searchParams.get("q")?.trim() || undefined;
+  const stage = searchParams.get("stage")?.trim() || undefined;
+  const minReports = Math.max(0, Number(searchParams.get("minReports") || "0") || 0);
+  const limit = Math.min(100, Math.max(1, Number(searchParams.get("limit") || "50") || 50));
+  const sort = toSort(searchParams.get("sort"));
+
+  const companies = await getCompanySummaries({
+    query,
+    stage,
+    minReports,
+    sort,
+    limit
+  });
+
+  return NextResponse.json({
+    companies,
+    dbConfigured: isDatabaseConfigured()
+  });
 }

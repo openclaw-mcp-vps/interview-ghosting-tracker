@@ -1,410 +1,385 @@
-import { createHash, randomBytes } from "node:crypto";
-import { Pool } from "pg";
-import { slugifyCompanyName } from "@/lib/utils";
+import { createHash } from "node:crypto";
+import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
-const ACCESS_COOKIE_DAYS = 30;
+export type SortMode = "ghosting_rate" | "reports" | "recent" | "name";
 
-type GlobalDbState = {
-  pool?: Pool;
-  initPromise?: Promise<void>;
-};
-
-type CompanyStatsRow = {
-  slug: string;
-  name: string;
-  website: string | null;
-  industry: string | null;
-  headquarters: string | null;
-  total_reports: number;
-  ghosting_rate: number;
-  avg_days_waited: number;
-  last_reported_at: string | null;
-};
-
-type ReportRow = {
-  id: number;
-  role_title: string;
-  candidate_seniority: string;
-  interview_stage: string;
-  interview_date: string;
-  days_waited: number;
-  follow_up_count: number;
-  outcome: "ghosted" | "replied" | "rejected" | "offer";
-  narrative: string;
-  created_at: string;
-};
-
-type StageBreakdownRow = {
-  interview_stage: string;
-  report_count: number;
-  ghosted_count: number;
+export type ReportInput = {
+  companyName: string;
+  companyWebsite?: string | null;
+  industry?: string | null;
+  roleTitle: string;
+  candidateFunction: string;
+  candidateLevel: string;
+  interviewStage: string;
+  interviewCount: number;
+  daysWaited: number;
+  lastContactDate: string;
+  location?: string | null;
+  experience: string;
+  eventualResponse: boolean;
+  publicConsent: boolean;
+  reporterEmail?: string | null;
 };
 
 export type CompanySummary = {
-  slug: string;
+  id: number;
   name: string;
+  slug: string;
   website: string | null;
   industry: string | null;
-  headquarters: string | null;
   totalReports: number;
   ghostingRate: number;
   avgDaysWaited: number;
   lastReportedAt: string | null;
 };
 
-export type CompanyDetail = CompanySummary & {
-  stageBreakdown: Array<{
-    stage: string;
-    reportCount: number;
-    ghostedCount: number;
-    ghostingRate: number;
-  }>;
-  reports: Array<{
-    id: number;
-    roleTitle: string;
-    candidateSeniority: string;
-    interviewStage: string;
-    interviewDate: string;
-    daysWaited: number;
-    followUpCount: number;
-    outcome: "ghosted" | "replied" | "rejected" | "offer";
-    narrative: string;
-    createdAt: string;
-  }>;
+export type CompanyProfile = CompanySummary & {
+  createdAt: string;
 };
 
-export type DashboardData = {
-  totals: {
-    companiesTracked: number;
-    reportsLogged: number;
-    overallGhostingRate: number;
-    averageDaysWaiting: number;
+export type ReportRecord = {
+  id: number;
+  roleTitle: string;
+  candidateFunction: string;
+  candidateLevel: string;
+  interviewStage: string;
+  interviewCount: number;
+  daysWaited: number;
+  lastContactDate: string;
+  location: string | null;
+  experience: string;
+  eventualResponse: boolean;
+  createdAt: string;
+};
+
+export type DashboardMetrics = {
+  totalCompanies: number;
+  totalReports: number;
+  overallGhostingRate: number;
+  medianWaitDays: number;
+  worstCompanies: CompanySummary[];
+};
+
+export type StageInsight = {
+  stage: string;
+  reports: number;
+  ghostingRate: number;
+  avgDaysWaited: number;
+};
+
+export type RecentReportWithCompany = ReportRecord & {
+  companyName: string;
+  companySlug: string;
+};
+
+const DATABASE_URL = process.env.DATABASE_URL;
+
+type GlobalState = {
+  pool: Pool | null;
+  schemaInit: Promise<void> | null;
+};
+
+const globalForDb = globalThis as unknown as { __ghostingDb?: GlobalState };
+
+if (!globalForDb.__ghostingDb) {
+  globalForDb.__ghostingDb = {
+    pool: null,
+    schemaInit: null
   };
-  highestRiskCompanies: CompanySummary[];
-  fastestResponders: CompanySummary[];
-};
+}
 
-const globalDbState = globalThis as unknown as GlobalDbState;
+const dbState = globalForDb.__ghostingDb;
 
-function getPool() {
-  if (!globalDbState.pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error("DATABASE_URL is required to use the tracker database.");
-    }
+export function isDatabaseConfigured(): boolean {
+  return Boolean(DATABASE_URL);
+}
 
-    globalDbState.pool = new Pool({
-      connectionString,
-      ssl:
-        process.env.NODE_ENV === "production"
-          ? { rejectUnauthorized: false }
-          : false
+function slugifyCompanyName(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "")
+    .slice(0, 80);
+}
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return value;
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
+}
+
+function toDateString(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  return null;
+}
+
+function mapCompanyRow(row: QueryResultRow): CompanySummary {
+  return {
+    id: toNumber(row.id),
+    name: String(row.name),
+    slug: String(row.slug),
+    website: row.website ? String(row.website) : null,
+    industry: row.industry ? String(row.industry) : null,
+    totalReports: toNumber(row.total_reports),
+    ghostingRate: toNumber(row.ghosting_rate),
+    avgDaysWaited: toNumber(row.avg_days_waited),
+    lastReportedAt: toDateString(row.last_reported_at)
+  };
+}
+
+function getPool(): Pool {
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL is not configured");
+  }
+
+  if (!dbState.pool) {
+    dbState.pool = new Pool({
+      connectionString: DATABASE_URL,
+      ssl: DATABASE_URL.includes("localhost")
+        ? false
+        : {
+            rejectUnauthorized: false
+          }
     });
   }
 
-  return globalDbState.pool;
+  return dbState.pool;
 }
 
-export async function ensureDatabase() {
-  if (!globalDbState.initPromise) {
-    globalDbState.initPromise = initDatabase();
+async function ensureSchema(): Promise<void> {
+  if (!DATABASE_URL) {
+    return;
   }
 
-  await globalDbState.initPromise;
+  if (!dbState.schemaInit) {
+    dbState.schemaInit = (async () => {
+      const pool = getPool();
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS companies (
+          id BIGSERIAL PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          slug TEXT NOT NULL UNIQUE,
+          website TEXT,
+          industry TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS reports (
+          id BIGSERIAL PRIMARY KEY,
+          company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          role_title TEXT NOT NULL,
+          candidate_function TEXT NOT NULL,
+          candidate_level TEXT NOT NULL,
+          interview_stage TEXT NOT NULL,
+          interview_count INT NOT NULL CHECK (interview_count > 0),
+          days_waited INT NOT NULL CHECK (days_waited >= 0),
+          last_contact_date DATE NOT NULL,
+          location TEXT,
+          experience TEXT NOT NULL,
+          eventual_response BOOLEAN NOT NULL DEFAULT FALSE,
+          public_consent BOOLEAN NOT NULL DEFAULT TRUE,
+          reporter_fingerprint TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS paid_access (
+          id BIGSERIAL PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL,
+          source TEXT NOT NULL,
+          stripe_customer_id TEXT,
+          stripe_checkout_session_id TEXT UNIQUE,
+          amount_total INT,
+          currency TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_reports_company_id ON reports(company_id);
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports(created_at DESC);
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_reports_stage ON reports(interview_stage);
+      `);
+
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_paid_access_email_status ON paid_access(email, status);
+      `);
+    })();
+  }
+
+  await dbState.schemaInit;
 }
 
-async function initDatabase() {
-  const pool = getPool();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS companies (
-      id BIGSERIAL PRIMARY KEY,
-      slug TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      website TEXT,
-      industry TEXT,
-      headquarters TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+async function findOrCreateCompany(
+  client: PoolClient,
+  input: { name: string; website?: string | null; industry?: string | null }
+): Promise<{ id: number; slug: string }> {
+  const normalizedName = input.name.trim();
 
-    CREATE TABLE IF NOT EXISTS reports (
-      id BIGSERIAL PRIMARY KEY,
-      company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-      role_title TEXT NOT NULL,
-      candidate_seniority TEXT NOT NULL,
-      interview_stage TEXT NOT NULL,
-      interview_date DATE NOT NULL,
-      days_waited INTEGER NOT NULL CHECK (days_waited >= 0),
-      follow_up_count INTEGER NOT NULL DEFAULT 0,
-      outcome TEXT NOT NULL CHECK (outcome IN ('ghosted','replied','rejected','offer')),
-      narrative TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_reports_company_id ON reports(company_id);
-    CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports(created_at DESC);
-
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id BIGSERIAL PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL,
-      stripe_customer_id TEXT,
-      stripe_subscription_id TEXT,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id);
-
-    CREATE TABLE IF NOT EXISTS access_sessions (
-      id BIGSERIAL PRIMARY KEY,
-      email TEXT NOT NULL,
-      token_hash TEXT NOT NULL UNIQUE,
-      expires_at TIMESTAMPTZ NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_access_sessions_expires ON access_sessions(expires_at);
-  `);
-}
-
-function mapCompanyStats(row: CompanyStatsRow): CompanySummary {
-  return {
-    slug: row.slug,
-    name: row.name,
-    website: row.website,
-    industry: row.industry,
-    headquarters: row.headquarters,
-    totalReports: Number(row.total_reports),
-    ghostingRate: Number(row.ghosting_rate),
-    avgDaysWaited: Number(row.avg_days_waited),
-    lastReportedAt: row.last_reported_at
-  };
-}
-
-export async function listIndustries() {
-  await ensureDatabase();
-  const pool = getPool();
-  const result = await pool.query<{ industry: string }>(`
-    SELECT DISTINCT industry
+  const existing = await client.query(
+    `
+    SELECT id, slug
     FROM companies
-    WHERE industry IS NOT NULL AND industry <> ''
-    ORDER BY industry ASC;
-  `);
-
-  return result.rows.map((row) => row.industry);
-}
-
-export async function listCompanies(options?: {
-  query?: string;
-  industry?: string;
-  limit?: number;
-  offset?: number;
-}) {
-  await ensureDatabase();
-  const pool = getPool();
-
-  const query = options?.query?.trim() || null;
-  const industry = options?.industry?.trim() || null;
-  const limit = options?.limit ?? 24;
-  const offset = options?.offset ?? 0;
-
-  const result = await pool.query<CompanyStatsRow>(
-    `
-      SELECT
-        c.slug,
-        c.name,
-        c.website,
-        c.industry,
-        c.headquarters,
-        COUNT(r.id)::INT AS total_reports,
-        COALESCE(ROUND((AVG((CASE WHEN r.outcome = 'ghosted' THEN 1 ELSE 0 END))::NUMERIC) * 100, 1), 0)::FLOAT8 AS ghosting_rate,
-        COALESCE(ROUND(AVG(r.days_waited)::NUMERIC, 1), 0)::FLOAT8 AS avg_days_waited,
-        MAX(r.created_at)::TEXT AS last_reported_at
-      FROM companies c
-      LEFT JOIN reports r ON r.company_id = c.id
-      WHERE ($1::TEXT IS NULL OR c.name ILIKE ('%' || $1 || '%'))
-        AND ($2::TEXT IS NULL OR c.industry = $2)
-      GROUP BY c.id
-      HAVING COUNT(r.id) > 0
-      ORDER BY ghosting_rate DESC, total_reports DESC, c.name ASC
-      LIMIT $3 OFFSET $4;
-    `,
-    [query, industry, limit, offset]
+    WHERE LOWER(name) = LOWER($1)
+    LIMIT 1;
+  `,
+    [normalizedName]
   );
 
-  return result.rows.map(mapCompanyStats);
-}
-
-export async function getCompanyBySlug(slug: string) {
-  await ensureDatabase();
-  const pool = getPool();
-
-  const companyResult = await pool.query<CompanyStatsRow>(
-    `
-      SELECT
-        c.slug,
-        c.name,
-        c.website,
-        c.industry,
-        c.headquarters,
-        COUNT(r.id)::INT AS total_reports,
-        COALESCE(ROUND((AVG((CASE WHEN r.outcome = 'ghosted' THEN 1 ELSE 0 END))::NUMERIC) * 100, 1), 0)::FLOAT8 AS ghosting_rate,
-        COALESCE(ROUND(AVG(r.days_waited)::NUMERIC, 1), 0)::FLOAT8 AS avg_days_waited,
-        MAX(r.created_at)::TEXT AS last_reported_at
-      FROM companies c
-      LEFT JOIN reports r ON r.company_id = c.id
-      WHERE c.slug = $1
-      GROUP BY c.id
-      LIMIT 1;
-    `,
-    [slug]
-  );
-
-  if (companyResult.rows.length === 0) {
-    return null;
-  }
-
-  const stageResult = await pool.query<StageBreakdownRow>(
-    `
-      SELECT
-        interview_stage,
-        COUNT(*)::INT AS report_count,
-        COUNT(*) FILTER (WHERE outcome = 'ghosted')::INT AS ghosted_count
-      FROM reports
-      WHERE company_id = (SELECT id FROM companies WHERE slug = $1)
-      GROUP BY interview_stage
-      ORDER BY report_count DESC;
-    `,
-    [slug]
-  );
-
-  const reportsResult = await pool.query<ReportRow>(
-    `
-      SELECT
-        id,
-        role_title,
-        candidate_seniority,
-        interview_stage,
-        interview_date::TEXT,
-        days_waited,
-        follow_up_count,
-        outcome,
-        narrative,
-        created_at::TEXT
-      FROM reports
-      WHERE company_id = (SELECT id FROM companies WHERE slug = $1)
-      ORDER BY created_at DESC
-      LIMIT 30;
-    `,
-    [slug]
-  );
-
-  const company = mapCompanyStats(companyResult.rows[0]);
-
-  return {
-    ...company,
-    stageBreakdown: stageResult.rows.map((row) => ({
-      stage: row.interview_stage,
-      reportCount: Number(row.report_count),
-      ghostedCount: Number(row.ghosted_count),
-      ghostingRate:
-        Number(row.report_count) === 0
-          ? 0
-          : Number(((Number(row.ghosted_count) / Number(row.report_count)) * 100).toFixed(1))
-    })),
-    reports: reportsResult.rows.map((row) => ({
-      id: Number(row.id),
-      roleTitle: row.role_title,
-      candidateSeniority: row.candidate_seniority,
-      interviewStage: row.interview_stage,
-      interviewDate: row.interview_date,
-      daysWaited: Number(row.days_waited),
-      followUpCount: Number(row.follow_up_count),
-      outcome: row.outcome,
-      narrative: row.narrative,
-      createdAt: row.created_at
-    }))
-  } satisfies CompanyDetail;
-}
-
-export async function createReport(input: {
-  companyName: string;
-  website?: string | null;
-  industry?: string | null;
-  headquarters?: string | null;
-  roleTitle: string;
-  candidateSeniority: "junior" | "mid" | "senior" | "staff" | "executive";
-  interviewStage: "recruiter-screen" | "hiring-manager" | "technical" | "panel" | "final" | "other";
-  interviewDate: string;
-  daysWaited: number;
-  followUpCount: number;
-  outcome: "ghosted" | "replied" | "rejected" | "offer";
-  narrative: string;
-}) {
-  await ensureDatabase();
-  const pool = getPool();
-
-  const slug = slugifyCompanyName(input.companyName) || `company-${Date.now()}`;
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const companyResult = await client.query<{ id: number; slug: string }>(
-      `
-        INSERT INTO companies (name, slug, website, industry, headquarters)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (slug)
-        DO UPDATE SET
-          name = EXCLUDED.name,
-          website = COALESCE(companies.website, EXCLUDED.website),
-          industry = COALESCE(companies.industry, EXCLUDED.industry),
-          headquarters = COALESCE(companies.headquarters, EXCLUDED.headquarters)
-        RETURNING id, slug;
-      `,
-      [
-        input.companyName.trim(),
-        slug,
-        input.website?.trim() || null,
-        input.industry?.trim() || null,
-        input.headquarters?.trim() || null
-      ]
-    );
-
-    const companyId = companyResult.rows[0]?.id;
-
-    if (!companyId) {
-      throw new Error("Failed to resolve company record.");
-    }
+  if (existing.rows[0]) {
+    const row = existing.rows[0];
 
     await client.query(
       `
-        INSERT INTO reports (
-          company_id,
-          role_title,
-          candidate_seniority,
-          interview_stage,
-          interview_date,
-          days_waited,
-          follow_up_count,
-          outcome,
-          narrative
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9);
+      UPDATE companies
+      SET
+        website = COALESCE($2, website),
+        industry = COALESCE($3, industry)
+      WHERE id = $1;
+    `,
+      [row.id, input.website?.trim() || null, input.industry?.trim() || null]
+    );
+
+    return { id: toNumber(row.id), slug: String(row.slug) };
+  }
+
+  const baseSlug = slugifyCompanyName(normalizedName) || "company";
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidateSlug = attempt === 0 ? baseSlug : `${baseSlug}-${attempt + 1}`;
+
+    try {
+      const inserted = await client.query(
+        `
+        INSERT INTO companies (name, slug, website, industry)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, slug;
       `,
+        [normalizedName, candidateSlug, input.website?.trim() || null, input.industry?.trim() || null]
+      );
+
+      return {
+        id: toNumber(inserted.rows[0]?.id),
+        slug: String(inserted.rows[0]?.slug)
+      };
+    } catch (error) {
+      const pgError = error as { code?: string };
+
+      if (pgError.code === "23505") {
+        const raceResult = await client.query(
+          `
+          SELECT id, slug
+          FROM companies
+          WHERE LOWER(name) = LOWER($1)
+          LIMIT 1;
+        `,
+          [normalizedName]
+        );
+
+        if (raceResult.rows[0]) {
+          return {
+            id: toNumber(raceResult.rows[0]?.id),
+            slug: String(raceResult.rows[0]?.slug)
+          };
+        }
+
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(`Could not create unique company slug for ${normalizedName}`);
+}
+
+export async function createGhostingReport(input: ReportInput): Promise<{ companySlug: string; reportId: number }> {
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL is missing. Add DATABASE_URL to submit reports.");
+  }
+
+  await ensureSchema();
+  const pool = getPool();
+
+  const reporterFingerprint = input.reporterEmail
+    ? createHash("sha256").update(input.reporterEmail.trim().toLowerCase()).digest("hex")
+    : null;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const company = await findOrCreateCompany(client, {
+      name: input.companyName,
+      website: input.companyWebsite,
+      industry: input.industry
+    });
+
+    const reportResult = await client.query(
+      `
+      INSERT INTO reports (
+        company_id,
+        role_title,
+        candidate_function,
+        candidate_level,
+        interview_stage,
+        interview_count,
+        days_waited,
+        last_contact_date,
+        location,
+        experience,
+        eventual_response,
+        public_consent,
+        reporter_fingerprint
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      RETURNING id;
+    `,
       [
-        companyId,
+        company.id,
         input.roleTitle.trim(),
-        input.candidateSeniority,
-        input.interviewStage,
-        input.interviewDate,
+        input.candidateFunction.trim(),
+        input.candidateLevel.trim(),
+        input.interviewStage.trim(),
+        input.interviewCount,
         input.daysWaited,
-        input.followUpCount,
-        input.outcome,
-        input.narrative.trim()
+        input.lastContactDate,
+        input.location?.trim() || null,
+        input.experience.trim(),
+        input.eventualResponse,
+        input.publicConsent,
+        reporterFingerprint
       ]
     );
 
     await client.query("COMMIT");
-    return { companySlug: companyResult.rows[0].slug };
+
+    return {
+      companySlug: company.slug,
+      reportId: toNumber(reportResult.rows[0]?.id)
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -413,240 +388,377 @@ export async function createReport(input: {
   }
 }
 
-export async function listRecentReports(limit = 20) {
-  await ensureDatabase();
+function buildSort(sort: SortMode): string {
+  switch (sort) {
+    case "reports":
+      return "total_reports DESC, ghosting_rate DESC, name ASC";
+    case "recent":
+      return "last_reported_at DESC NULLS LAST, total_reports DESC";
+    case "name":
+      return "name ASC";
+    case "ghosting_rate":
+    default:
+      return "ghosting_rate DESC, total_reports DESC, name ASC";
+  }
+}
+
+export async function getCompanySummaries(options?: {
+  query?: string;
+  stage?: string;
+  minReports?: number;
+  sort?: SortMode;
+  limit?: number;
+}): Promise<CompanySummary[]> {
+  if (!DATABASE_URL) {
+    return [];
+  }
+
+  await ensureSchema();
   const pool = getPool();
 
-  const result = await pool.query<
-    ReportRow & {
-      company_name: string;
-      company_slug: string;
-    }
-  >(
+  const query = options?.query?.trim() || null;
+  const stage = options?.stage?.trim() || null;
+  const minReports = options?.minReports ?? 0;
+  const limit = options?.limit ?? 50;
+  const sort = options?.sort ?? "ghosting_rate";
+
+  const orderClause = buildSort(sort);
+
+  const result = await pool.query(
     `
-      SELECT
-        r.id,
-        r.role_title,
-        r.candidate_seniority,
-        r.interview_stage,
-        r.interview_date::TEXT,
-        r.days_waited,
-        r.follow_up_count,
-        r.outcome,
-        r.narrative,
-        r.created_at::TEXT,
-        c.name AS company_name,
-        c.slug AS company_slug
-      FROM reports r
-      INNER JOIN companies c ON c.id = r.company_id
-      ORDER BY r.created_at DESC
-      LIMIT $1;
-    `,
+    SELECT
+      c.id,
+      c.name,
+      c.slug,
+      c.website,
+      c.industry,
+      COUNT(r.id)::int AS total_reports,
+      COALESCE(
+        ROUND(
+          (100.0 * SUM(CASE WHEN r.id IS NOT NULL AND r.eventual_response = FALSE THEN 1 ELSE 0 END)
+            / NULLIF(COUNT(r.id), 0)
+          )::numeric,
+          1
+        ),
+        0
+      ) AS ghosting_rate,
+      COALESCE(ROUND(AVG(r.days_waited)::numeric, 1), 0) AS avg_days_waited,
+      MAX(r.created_at) AS last_reported_at
+    FROM companies c
+    LEFT JOIN reports r
+      ON r.company_id = c.id
+      AND ($2::text IS NULL OR r.interview_stage = $2)
+    WHERE
+      ($1::text IS NULL OR c.name ILIKE '%' || $1 || '%' OR c.slug ILIKE '%' || $1 || '%')
+    GROUP BY c.id, c.name, c.slug, c.website, c.industry
+    HAVING COUNT(r.id) >= $3
+    ORDER BY ${orderClause}
+    LIMIT $4;
+  `,
+    [query, stage, minReports, limit]
+  );
+
+  return result.rows.map(mapCompanyRow);
+}
+
+export async function getCompanyProfileBySlug(slug: string): Promise<CompanyProfile | null> {
+  if (!DATABASE_URL) {
+    return null;
+  }
+
+  await ensureSchema();
+  const pool = getPool();
+
+  const result = await pool.query(
+    `
+    SELECT
+      c.id,
+      c.name,
+      c.slug,
+      c.website,
+      c.industry,
+      c.created_at,
+      COUNT(r.id)::int AS total_reports,
+      COALESCE(
+        ROUND(
+          (100.0 * SUM(CASE WHEN r.id IS NOT NULL AND r.eventual_response = FALSE THEN 1 ELSE 0 END)
+            / NULLIF(COUNT(r.id), 0)
+          )::numeric,
+          1
+        ),
+        0
+      ) AS ghosting_rate,
+      COALESCE(ROUND(AVG(r.days_waited)::numeric, 1), 0) AS avg_days_waited,
+      MAX(r.created_at) AS last_reported_at
+    FROM companies c
+    LEFT JOIN reports r ON r.company_id = c.id
+    WHERE c.slug = $1
+    GROUP BY c.id, c.name, c.slug, c.website, c.industry, c.created_at
+    LIMIT 1;
+  `,
+    [slug]
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...mapCompanyRow(row),
+    createdAt: toDateString(row.created_at) ?? new Date().toISOString()
+  };
+}
+
+export async function getReportsByCompanyId(companyId: number, limit = 100): Promise<ReportRecord[]> {
+  if (!DATABASE_URL) {
+    return [];
+  }
+
+  await ensureSchema();
+  const pool = getPool();
+
+  const result = await pool.query(
+    `
+    SELECT
+      id,
+      role_title,
+      candidate_function,
+      candidate_level,
+      interview_stage,
+      interview_count,
+      days_waited,
+      last_contact_date,
+      location,
+      experience,
+      eventual_response,
+      created_at
+    FROM reports
+    WHERE company_id = $1 AND public_consent = TRUE
+    ORDER BY created_at DESC
+    LIMIT $2;
+  `,
+    [companyId, limit]
+  );
+
+  return result.rows.map((row) => ({
+    id: toNumber(row.id),
+    roleTitle: String(row.role_title),
+    candidateFunction: String(row.candidate_function),
+    candidateLevel: String(row.candidate_level),
+    interviewStage: String(row.interview_stage),
+    interviewCount: toNumber(row.interview_count),
+    daysWaited: toNumber(row.days_waited),
+    lastContactDate: toDateString(row.last_contact_date) ?? "",
+    location: row.location ? String(row.location) : null,
+    experience: String(row.experience),
+    eventualResponse: Boolean(row.eventual_response),
+    createdAt: toDateString(row.created_at) ?? ""
+  }));
+}
+
+export async function getRecentReports(limit = 12): Promise<RecentReportWithCompany[]> {
+  if (!DATABASE_URL) {
+    return [];
+  }
+
+  await ensureSchema();
+  const pool = getPool();
+
+  const result = await pool.query(
+    `
+    SELECT
+      r.id,
+      r.role_title,
+      r.candidate_function,
+      r.candidate_level,
+      r.interview_stage,
+      r.interview_count,
+      r.days_waited,
+      r.last_contact_date,
+      r.location,
+      r.experience,
+      r.eventual_response,
+      r.created_at,
+      c.name AS company_name,
+      c.slug AS company_slug
+    FROM reports r
+    INNER JOIN companies c ON c.id = r.company_id
+    WHERE r.public_consent = TRUE
+    ORDER BY r.created_at DESC
+    LIMIT $1;
+  `,
     [limit]
   );
 
   return result.rows.map((row) => ({
-    id: Number(row.id),
-    companyName: row.company_name,
-    companySlug: row.company_slug,
-    roleTitle: row.role_title,
-    candidateSeniority: row.candidate_seniority,
-    interviewStage: row.interview_stage,
-    interviewDate: row.interview_date,
-    daysWaited: Number(row.days_waited),
-    followUpCount: Number(row.follow_up_count),
-    outcome: row.outcome,
-    narrative: row.narrative,
-    createdAt: row.created_at
+    id: toNumber(row.id),
+    roleTitle: String(row.role_title),
+    candidateFunction: String(row.candidate_function),
+    candidateLevel: String(row.candidate_level),
+    interviewStage: String(row.interview_stage),
+    interviewCount: toNumber(row.interview_count),
+    daysWaited: toNumber(row.days_waited),
+    lastContactDate: toDateString(row.last_contact_date) ?? "",
+    location: row.location ? String(row.location) : null,
+    experience: String(row.experience),
+    eventualResponse: Boolean(row.eventual_response),
+    createdAt: toDateString(row.created_at) ?? "",
+    companyName: String(row.company_name),
+    companySlug: String(row.company_slug)
   }));
 }
 
-export async function getDashboardData() {
-  await ensureDatabase();
+export async function getStageInsights(limit = 8): Promise<StageInsight[]> {
+  if (!DATABASE_URL) {
+    return [];
+  }
+
+  await ensureSchema();
   const pool = getPool();
 
-  const [totalsResult, highRiskResult, bestResult] = await Promise.all([
-    pool.query<{
-      companies_tracked: number;
-      reports_logged: number;
-      overall_ghosting_rate: number;
-      average_days_waiting: number;
-    }>(`
+  const result = await pool.query(
+    `
+    SELECT
+      interview_stage AS stage,
+      COUNT(*)::int AS reports,
+      ROUND((100.0 * SUM(CASE WHEN eventual_response = FALSE THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0))::numeric, 1) AS ghosting_rate,
+      ROUND(AVG(days_waited)::numeric, 1) AS avg_days_waited
+    FROM reports
+    GROUP BY interview_stage
+    HAVING COUNT(*) > 0
+    ORDER BY ghosting_rate DESC, reports DESC
+    LIMIT $1;
+  `,
+    [limit]
+  );
+
+  return result.rows.map((row) => ({
+    stage: String(row.stage),
+    reports: toNumber(row.reports),
+    ghostingRate: toNumber(row.ghosting_rate),
+    avgDaysWaited: toNumber(row.avg_days_waited)
+  }));
+}
+
+export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+  if (!DATABASE_URL) {
+    return {
+      totalCompanies: 0,
+      totalReports: 0,
+      overallGhostingRate: 0,
+      medianWaitDays: 0,
+      worstCompanies: []
+    };
+  }
+
+  await ensureSchema();
+  const pool = getPool();
+
+  const [totals, median, worstCompanies] = await Promise.all([
+    pool.query(`
       SELECT
-        COUNT(DISTINCT c.id)::INT AS companies_tracked,
-        COUNT(r.id)::INT AS reports_logged,
-        COALESCE(ROUND((AVG((CASE WHEN r.outcome = 'ghosted' THEN 1 ELSE 0 END))::NUMERIC) * 100, 1), 0)::FLOAT8 AS overall_ghosting_rate,
-        COALESCE(ROUND(AVG(r.days_waited)::NUMERIC, 1), 0)::FLOAT8 AS average_days_waiting
-      FROM companies c
-      LEFT JOIN reports r ON r.company_id = c.id;
+        (SELECT COUNT(*)::int FROM companies) AS total_companies,
+        (SELECT COUNT(*)::int FROM reports) AS total_reports,
+        COALESCE(
+          ROUND(
+            (
+              SELECT 100.0 * SUM(CASE WHEN eventual_response = FALSE THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+              FROM reports
+            )::numeric,
+            1
+          ),
+          0
+        ) AS overall_ghosting_rate;
     `),
-    pool.query<CompanyStatsRow>(`
-      SELECT
-        c.slug,
-        c.name,
-        c.website,
-        c.industry,
-        c.headquarters,
-        COUNT(r.id)::INT AS total_reports,
-        COALESCE(ROUND((AVG((CASE WHEN r.outcome = 'ghosted' THEN 1 ELSE 0 END))::NUMERIC) * 100, 1), 0)::FLOAT8 AS ghosting_rate,
-        COALESCE(ROUND(AVG(r.days_waited)::NUMERIC, 1), 0)::FLOAT8 AS avg_days_waited,
-        MAX(r.created_at)::TEXT AS last_reported_at
-      FROM companies c
-      INNER JOIN reports r ON r.company_id = c.id
-      GROUP BY c.id
-      HAVING COUNT(r.id) >= 3
-      ORDER BY ghosting_rate DESC, total_reports DESC
-      LIMIT 10;
+    pool.query(`
+      SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY days_waited), 0) AS median_wait_days
+      FROM reports;
     `),
-    pool.query<CompanyStatsRow>(`
-      SELECT
-        c.slug,
-        c.name,
-        c.website,
-        c.industry,
-        c.headquarters,
-        COUNT(r.id)::INT AS total_reports,
-        COALESCE(ROUND((AVG((CASE WHEN r.outcome = 'ghosted' THEN 1 ELSE 0 END))::NUMERIC) * 100, 1), 0)::FLOAT8 AS ghosting_rate,
-        COALESCE(ROUND(AVG(r.days_waited)::NUMERIC, 1), 0)::FLOAT8 AS avg_days_waited,
-        MAX(r.created_at)::TEXT AS last_reported_at
-      FROM companies c
-      INNER JOIN reports r ON r.company_id = c.id
-      GROUP BY c.id
-      HAVING COUNT(r.id) >= 3
-      ORDER BY ghosting_rate ASC, avg_days_waited ASC, total_reports DESC
-      LIMIT 10;
-    `)
+    getCompanySummaries({ minReports: 3, sort: "ghosting_rate", limit: 8 })
   ]);
 
-  const totals = totalsResult.rows[0] ?? {
-    companies_tracked: 0,
-    reports_logged: 0,
-    overall_ghosting_rate: 0,
-    average_days_waiting: 0
-  };
-
   return {
-    totals: {
-      companiesTracked: Number(totals.companies_tracked),
-      reportsLogged: Number(totals.reports_logged),
-      overallGhostingRate: Number(totals.overall_ghosting_rate),
-      averageDaysWaiting: Number(totals.average_days_waiting)
-    },
-    highestRiskCompanies: highRiskResult.rows.map(mapCompanyStats),
-    fastestResponders: bestResult.rows.map(mapCompanyStats)
-  } satisfies DashboardData;
+    totalCompanies: toNumber(totals.rows[0]?.total_companies),
+    totalReports: toNumber(totals.rows[0]?.total_reports),
+    overallGhostingRate: toNumber(totals.rows[0]?.overall_ghosting_rate),
+    medianWaitDays: toNumber(median.rows[0]?.median_wait_days),
+    worstCompanies
+  };
 }
 
-function normalizeEmail(email: string) {
-  return email.trim().toLowerCase();
-}
-
-export async function upsertSubscription(input: {
+export async function upsertPaidAccess(input: {
   email: string;
-  status: "active" | "canceled" | "past_due";
+  status: "paid" | "refunded" | "disputed";
+  source?: string;
   stripeCustomerId?: string | null;
-  stripeSubscriptionId?: string | null;
-}) {
-  await ensureDatabase();
+  stripeCheckoutSessionId?: string | null;
+  amountTotal?: number | null;
+  currency?: string | null;
+}): Promise<void> {
+  if (!DATABASE_URL) {
+    return;
+  }
+
+  await ensureSchema();
   const pool = getPool();
 
   await pool.query(
     `
-      INSERT INTO subscriptions (email, status, stripe_customer_id, stripe_subscription_id, updated_at)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (email)
-      DO UPDATE SET
-        status = EXCLUDED.status,
-        stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, subscriptions.stripe_customer_id),
-        stripe_subscription_id = COALESCE(EXCLUDED.stripe_subscription_id, subscriptions.stripe_subscription_id),
-        updated_at = NOW();
-    `,
+    INSERT INTO paid_access (
+      email,
+      status,
+      source,
+      stripe_customer_id,
+      stripe_checkout_session_id,
+      amount_total,
+      currency,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+    ON CONFLICT (email)
+    DO UPDATE SET
+      status = EXCLUDED.status,
+      source = EXCLUDED.source,
+      stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, paid_access.stripe_customer_id),
+      stripe_checkout_session_id = COALESCE(EXCLUDED.stripe_checkout_session_id, paid_access.stripe_checkout_session_id),
+      amount_total = COALESCE(EXCLUDED.amount_total, paid_access.amount_total),
+      currency = COALESCE(EXCLUDED.currency, paid_access.currency),
+      updated_at = NOW();
+  `,
     [
-      normalizeEmail(input.email),
+      input.email.trim().toLowerCase(),
       input.status,
+      input.source || "stripe",
       input.stripeCustomerId ?? null,
-      input.stripeSubscriptionId ?? null
+      input.stripeCheckoutSessionId ?? null,
+      input.amountTotal ?? null,
+      input.currency ?? null
     ]
   );
 }
 
-export async function updateSubscriptionStatusByCustomerId(input: {
-  stripeCustomerId: string;
-  status: "active" | "canceled" | "past_due";
-}) {
-  await ensureDatabase();
+export async function hasPaidAccess(email: string): Promise<boolean> {
+  if (!DATABASE_URL) {
+    return false;
+  }
+
+  await ensureSchema();
   const pool = getPool();
 
-  await pool.query(
+  const result = await pool.query(
     `
-      UPDATE subscriptions
-      SET status = $2, updated_at = NOW()
-      WHERE stripe_customer_id = $1;
-    `,
-    [input.stripeCustomerId, input.status]
-  );
-}
-
-export async function hasActiveSubscription(email: string) {
-  await ensureDatabase();
-  const pool = getPool();
-  const result = await pool.query<{ email: string }>(
-    `
-      SELECT email
-      FROM subscriptions
-      WHERE email = $1
-        AND status = 'active'
-      LIMIT 1;
-    `,
-    [normalizeEmail(email)]
+    SELECT status
+    FROM paid_access
+    WHERE email = $1
+    LIMIT 1;
+  `,
+    [email.trim().toLowerCase()]
   );
 
-  return result.rows.length > 0;
-}
+  if (!result.rows[0]) {
+    return false;
+  }
 
-function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-export async function createAccessSession(email: string) {
-  await ensureDatabase();
-  const pool = getPool();
-  const rawToken = randomBytes(32).toString("hex");
-  const tokenHash = hashToken(rawToken);
-
-  await pool.query(
-    `
-      DELETE FROM access_sessions
-      WHERE expires_at < NOW();
-    `
-  );
-
-  await pool.query(
-    `
-      INSERT INTO access_sessions (email, token_hash, expires_at)
-      VALUES ($1, $2, NOW() + INTERVAL '${ACCESS_COOKIE_DAYS} days');
-    `,
-    [normalizeEmail(email), tokenHash]
-  );
-
-  return rawToken;
-}
-
-export async function resolveAccessSessionEmail(token: string) {
-  await ensureDatabase();
-  const pool = getPool();
-  const tokenHash = hashToken(token);
-
-  const result = await pool.query<{ email: string }>(
-    `
-      SELECT email
-      FROM access_sessions
-      WHERE token_hash = $1
-        AND expires_at > NOW()
-      LIMIT 1;
-    `,
-    [tokenHash]
-  );
-
-  return result.rows[0]?.email ?? null;
+  return result.rows[0].status === "paid";
 }
